@@ -75,6 +75,20 @@ def normalize_tags(tags: str) -> str:
     return ",".join(seen)
 
 
+def parse_tags(tags: str) -> list[str]:
+    return [tag for tag in normalize_tags(tags or "").split(",") if tag]
+
+
+def matches_tag_filter(account: MailAccount, tag: str) -> bool:
+    tag_text = tag.strip()
+    if not tag_text:
+        return True
+    tags = parse_tags(account.tags or "")
+    if tag_text == "__NO_TAG__":
+        return not tags
+    return tag_text in tags
+
+
 def normalize_remark(remark: str) -> str:
     return (remark or "").strip()
 
@@ -210,13 +224,19 @@ def import_accounts(body: ImportBody, db: Session = Depends(get_db)):
 
 
 @app.get("/api/accounts/export", dependencies=[Depends(require_token)])
-def export_accounts(db: Session = Depends(get_db)):
+def export_accounts(
+    tag: str = Query(default=""),
+    db: Session = Depends(get_db),
+):
     accounts = (
         db.query(MailAccount)
         .filter(MailAccount.valid_status != 0)
         .order_by(MailAccount.id.asc())
         .all()
     )
+    if tag:
+        accounts = [account for account in accounts if matches_tag_filter(account, tag)]
+
     lines = [
         "----".join(
             [

@@ -1012,7 +1012,15 @@ async function exportAccounts() {
     elements.exportAccountsBtn.disabled = true;
 
     try {
-        const response = await fetch("/api/accounts/export", {
+        const params = new URLSearchParams();
+        if (elements.tagFilter.value) {
+            params.set("tag", elements.tagFilter.value);
+        }
+        const exportUrl = params.toString()
+            ? `/api/accounts/export?${params.toString()}`
+            : "/api/accounts/export";
+
+        const response = await fetch(exportUrl, {
             headers: {
                 "X-Token": state.token
             }
