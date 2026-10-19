@@ -1,5 +1,8 @@
 const AUTO_REFRESH_INTERVAL = 15000;
 const NO_TAG_FILTER_VALUE = "__NO_TAG__";
+// 标签筛选的两种模式：include = 只看选中标签，exclude = 排除选中标签
+const TAG_FILTER_MODE_INCLUDE = "include";
+const TAG_FILTER_MODE_EXCLUDE = "exclude";
 const MOBILE_LAYOUT_BREAKPOINT = 980;
 const DEFAULT_LOG_PAGE_SIZE = 10;
 
@@ -57,6 +60,7 @@ const elements = {
     mailStepButtons: Array.from(document.querySelectorAll("[data-mail-step-target]")),
     mailStepPanels: Array.from(document.querySelectorAll("[data-mail-step]")),
     mailTagFilter: document.getElementById("mail-tag-filter"),
+    mailTagFilterMode: document.getElementById("mail-tag-filter-mode"),
     menuItems: Array.from(document.querySelectorAll(".menu-item")),
     mobileMailSteps: document.querySelector(".mobile-mail-steps"),
     openMailsBtn: document.getElementById("open-mails-btn"),
@@ -377,12 +381,25 @@ function setMessage(target, message, isError = false) {
     target.classList.toggle("is-error", isError);
 }
 
-function matchesTagFilter(account, selectedTag) {
+function getTagFilterLabel(selectedTag) {
+    return selectedTag === NO_TAG_FILTER_VALUE ? "无标签" : selectedTag;
+}
+
+function matchesTagFilter(account, selectedTag, mode = TAG_FILTER_MODE_INCLUDE) {
     if (!selectedTag) {
         return true;
     }
 
     const tags = parseTags(account.tags);
+    if (mode === TAG_FILTER_MODE_EXCLUDE) {
+        // 排除模式：选中“无标签”时表示排除掉所有带标签的账号，选中具体标签时表示排除包含该标签的账号
+        if (selectedTag === NO_TAG_FILTER_VALUE) {
+            return tags.length > 0;
+        }
+
+        return !tags.includes(selectedTag);
+    }
+
     if (selectedTag === NO_TAG_FILTER_VALUE) {
         return tags.length === 0;
     }
@@ -390,11 +407,11 @@ function matchesTagFilter(account, selectedTag) {
     return tags.includes(selectedTag);
 }
 
-function getFilteredAccounts(keyword, selectedTag = "") {
+function getFilteredAccounts(keyword, selectedTag = "", mode = TAG_FILTER_MODE_INCLUDE) {
     const query = keyword.trim().toLowerCase();
     return state.accounts.filter((account) => {
         const matchesKeyword = !query || account.email.toLowerCase().includes(query);
-        return matchesKeyword && matchesTagFilter(account, selectedTag);
+        return matchesKeyword && matchesTagFilter(account, selectedTag, mode);
     });
 }
 
@@ -631,11 +648,23 @@ function renderAccountButtons(container, accounts, options) {
 
 function renderAccounts() {
     const accountMatches = getFilteredAccounts(elements.searchInput.value, elements.tagFilter.value);
-    const mailMatches = getFilteredAccounts(elements.mailSearchInput.value, elements.mailTagFilter.value);
+    const mailTagMode = elements.mailTagFilterMode.value === TAG_FILTER_MODE_EXCLUDE
+        ? TAG_FILTER_MODE_EXCLUDE
+        : TAG_FILTER_MODE_INCLUDE;
+    const mailMatches = getFilteredAccounts(
+        elements.mailSearchInput.value,
+        elements.mailTagFilter.value,
+        mailTagMode
+    );
 
     elements.accountCount.textContent = text.accountCount(state.accounts.length);
     elements.accountFilterSummary.textContent = text.visibleAccountCount(accountMatches.length, state.accounts.length);
-    elements.mailFilterSummary.textContent = text.visibleAccountCount(mailMatches.length, state.accounts.length);
+    // 排除模式下在统计文案后面补充当前排除的标签，避免用户误判筛选结果
+    const mailSummary = [text.visibleAccountCount(mailMatches.length, state.accounts.length)];
+    if (mailTagMode === TAG_FILTER_MODE_EXCLUDE && elements.mailTagFilter.value) {
+        mailSummary.push(`（已排除标签：${getTagFilterLabel(elements.mailTagFilter.value)}）`);
+    }
+    elements.mailFilterSummary.textContent = mailSummary.join(" ");
     renderAccountButtons(elements.accountList, accountMatches, {
         onSelect: selectAccountForManage
     });
@@ -1530,6 +1559,7 @@ elements.searchInput.addEventListener("input", renderAccounts);
 elements.mailSearchInput.addEventListener("input", renderAccounts);
 elements.tagFilter.addEventListener("change", renderAccounts);
 elements.mailTagFilter.addEventListener("change", renderAccounts);
+elements.mailTagFilterMode.addEventListener("change", renderAccounts);
 elements.refreshLogPage.addEventListener("change", async () => {
     state.logsPagination.page = Number(elements.refreshLogPage.value) || 1;
     await loadTokenRefreshLogs();

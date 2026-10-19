@@ -134,16 +134,20 @@
                         <div class="panel-head">
                             <div>
                                 <h3>选择邮箱</h3>
-                                <p class="muted">先按邮箱搜索或按标签筛选，再选择要查看邮件的账号</p>
+                                <p class="muted">先按邮箱搜索或按标签筛选（可切换包含/排除），再选择要查看邮件的账号</p>
                             </div>
                         </div>
 
                         <div class="stack gap-sm">
-                            <div class="filter-row">
+                            <div class="filter-row filter-row-tag-mode">
                                 <input id="mail-search-input" class="input" type="text" placeholder="搜索邮箱">
                                 <select id="mail-tag-filter" class="input filter-select">
                                     <option value="">全部标签</option>
                                     <option value="__NO_TAG__">无标签</option>
+                                </select>
+                                <select id="mail-tag-filter-mode" class="input filter-select" title="切换标签筛选方式">
+                                    <option value="include">包含标签</option>
+                                    <option value="exclude">排除标签</option>
                                 </select>
                             </div>
                             <p id="mail-filter-summary" class="filter-summary">当前显示 0 / 总计 0 个邮箱</p>

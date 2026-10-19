@@ -489,6 +489,11 @@ time,
     gap: 10px;
 }
 
+/* 邮件页的标签筛选多了一个“包含/排除”模式下拉，单独放宽列宽 */
+.filter-row-tag-mode {
+    grid-template-columns: minmax(0, 1fr) 120px 104px;
+}
+
 .filter-summary {
     margin: -2px 2px 2px;
     color: var(--muted);
