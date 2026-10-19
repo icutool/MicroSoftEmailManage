@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import socket
+from urllib.parse import urlsplit
 from time import perf_counter
 from datetime import timedelta, timezone
 from email.header import decode_header, make_header
@@ -17,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from models import MailAccount
 from oauth_service import OAuthServiceError, get_valid_access_token
+from proxy_config import MAIL_HTTP_PROXY_URL, get_proxy_authorization_header
 
 
 IMAP_HOST = "outlook.live.com"
@@ -277,6 +279,48 @@ def _select_folder(mail_client: imaplib.IMAP4_SSL, folder: str) -> None:
         raise MailServiceError(f"failed to open folder: {display_name}")
 
 
+class ProxyIMAP4SSL(imaplib.IMAP4_SSL):
+    def _create_socket(self, timeout):
+        if not MAIL_HTTP_PROXY_URL:
+            return super()._create_socket(timeout)
+
+        proxy = urlsplit(MAIL_HTTP_PROXY_URL)
+        proxy_socket = socket.create_connection((proxy.hostname, proxy.port), timeout)
+        try:
+            target_host = f"[{self.host}]" if ":" in self.host else self.host
+            target = f"{target_host}:{self.port}"
+            request_lines = [
+                f"CONNECT {target} HTTP/1.1",
+                f"Host: {target}",
+                "Proxy-Connection: Keep-Alive",
+            ]
+            authorization = get_proxy_authorization_header()
+            if authorization:
+                request_lines.append(f"Proxy-Authorization: {authorization}")
+            proxy_socket.sendall(("\r\n".join(request_lines) + "\r\n\r\n").encode("ascii"))
+
+            response = bytearray()
+            while b"\r\n\r\n" not in response:
+                chunk = proxy_socket.recv(min(4096, 65536 - len(response)))
+                if not chunk:
+                    raise OSError("HTTP proxy closed the connection before completing CONNECT")
+                response.extend(chunk)
+                if len(response) >= 65536 and b"\r\n\r\n" not in response:
+                    raise OSError("HTTP proxy CONNECT response headers are too large")
+
+            status_line = bytes(response).split(b"\r\n", 1)[0]
+            status_parts = status_line.split(maxsplit=2)
+            if len(status_parts) < 2 or status_parts[1] != b"200":
+                status_text = status_line.decode("iso-8859-1", errors="replace")
+                raise OSError(f"HTTP proxy CONNECT failed: {status_text}")
+
+            # CONNECT 建立隧道后，在该 TCP 连接上继续执行 IMAP 的 TLS 握手。
+            return self.ssl_context.wrap_socket(proxy_socket, server_hostname=self.host)
+        except Exception:
+            proxy_socket.close()
+            raise
+
+
 def _fetch_mail_payloads(
     mail_client: imaplib.IMAP4_SSL,
     mail_ids: list[bytes],
@@ -354,12 +398,13 @@ def load_mail_messages(
     graceful_logout = False
     try:
         connect_started_at = perf_counter()
-        mail = imaplib.IMAP4_SSL(IMAP_HOST, timeout=IMAP_TIMEOUT_SECONDS)
+        mail = ProxyIMAP4SSL(IMAP_HOST, timeout=IMAP_TIMEOUT_SECONDS)
         logger.info(
-            "读取邮件阶段耗时: account_id=%s stage=imap_connect duration_ms=%.1f timeout_seconds=%s",
+            "读取邮件阶段耗时: account_id=%s stage=imap_connect duration_ms=%.1f timeout_seconds=%s route=%s",
             account.id,
             (perf_counter() - connect_started_at) * 1000,
             IMAP_TIMEOUT_SECONDS,
+            "http_proxy" if MAIL_HTTP_PROXY_URL else "direct",
         )
 
         auth_started_at = perf_counter()

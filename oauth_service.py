@@ -6,6 +6,7 @@ import requests
 from sqlalchemy.orm import Session
 
 from models import MailAccount, MailRefreshTokenHistory
+from proxy_config import MAIL_HTTP_PROXY_URL, REQUESTS_PROXY_MAP
 
 
 TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
@@ -42,17 +43,26 @@ def get_valid_access_token(account: MailAccount, db: Session) -> str:
 
     old_refresh_token = account.refresh_token
     started_at = perf_counter()
-    logger.info("OAuth access_token 缓存未命中，开始刷新: account_id=%s email=%s", account.id, account.email)
+    logger.info(
+        "OAuth access_token 缓存未命中，开始刷新: account_id=%s email=%s route=%s",
+        account.id,
+        account.email,
+        "http_proxy" if MAIL_HTTP_PROXY_URL else "direct",
+    )
     try:
-        response = requests.post(
-            TOKEN_URL,
-            data={
-                "client_id": account.client_id,
-                "grant_type": "refresh_token",
-                "refresh_token": old_refresh_token,
-            },
-            timeout=20,
-        )
+        # 不读取系统代理环境变量：只有显式配置 MAIL_HTTP_PROXY 时才走代理。
+        with requests.Session() as session:
+            session.trust_env = False
+            response = session.post(
+                TOKEN_URL,
+                data={
+                    "client_id": account.client_id,
+                    "grant_type": "refresh_token",
+                    "refresh_token": old_refresh_token,
+                },
+                timeout=20,
+                proxies=REQUESTS_PROXY_MAP,
+            )
     except requests.RequestException as exc:
         logger.warning(
             "OAuth 刷新接口失败: account_id=%s error_type=%s error=%s duration_ms=%.1f",

@@ -138,6 +138,7 @@ abc2@hotmail.com----123456----clientidxxxx----refresh_token_xxx
 .
 ├─ icutool_mail.py                # FastAPI 入口与接口定义
 ├─ oauth_service.py               # OAuth token 刷新逻辑
+├─ proxy_config.py                # 邮件 HTTP 代理配置
 ├─ mail_service.py                # 邮件读取与 IMAP 交互
 ├─ token_refresh_service.py       # 每日自动刷新任务与日志
 ├─ models.py                      # 数据模型
@@ -181,7 +182,25 @@ export ADMIN_PASSWORD="your_password"
 admin123
 ```
 
-### 3. 启动项目
+### 3. 配置邮件 HTTP 代理（可选）
+
+设置 `MAIL_HTTP_PROXY` 后，OAuth HTTPS 请求和 Outlook IMAP SSL 连接都会走该 HTTP 代理；未设置或留空时直连。
+
+Windows PowerShell：
+
+```powershell
+$env:MAIL_HTTP_PROXY="http://127.0.0.1:7890"
+```
+
+Linux Shell：
+
+```shell
+export MAIL_HTTP_PROXY="http://127.0.0.1:7890"
+```
+
+IMAP SSL 通过 HTTP `CONNECT` 隧道连接 `outlook.live.com:993`，因此代理需要允许 CONNECT 到 993 端口。设置或修改代理地址后需要重启项目。
+
+### 4. 启动项目
 
 ```bash
 python icutool_mail.py
