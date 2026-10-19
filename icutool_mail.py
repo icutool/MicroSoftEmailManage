@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from database import Base, SessionLocal, engine
@@ -31,6 +31,11 @@ from token_refresh_service import (
 
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+
+# 收件箱取件支持的文件夹白名单，inbox 为收件箱，junk 为垃圾箱。
+ALLOWED_MAIL_FOLDERS = ("inbox", "junk")
+DEFAULT_MAIL_LIMIT = 20
+MAX_MAIL_LIMIT = 50
 
 
 logger = logging.getLogger(__name__)
@@ -80,6 +85,19 @@ def require_token(x_token: Optional[str] = Header(default=None)):
 
 def require_preview_token(token: Optional[str] = Query(default=None)):
     if token != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def require_mail_api_token(
+    x_token: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None),
+):
+    """取件接口同时支持 X-Token 请求头和 token 查询参数。
+
+    第三方调用方（脚本、无代码平台、浏览器直接打开链接）往往不方便自定义请求头，
+    因此额外允许通过查询参数传递令牌。
+    """
+    if x_token != ADMIN_PASSWORD and token != ADMIN_PASSWORD:
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
@@ -347,19 +365,99 @@ def update_remark(account_id: int, body: RemarkBody, db: Session = Depends(get_d
     return {"ok": True, "remark": account.remark}
 
 
+def resolve_account_by_email(db: Session, email: str) -> Optional[MailAccount]:
+    """按邮箱地址查找账号。
+
+    第三方调用方传入的邮箱大小写可能与导入时不一致，因此先按原值精确匹配，
+    匹配不到时再退化为大小写不敏感匹配。
+    """
+    email_value = (email or "").strip()
+    if not email_value:
+        return None
+
+    account = db.query(MailAccount).filter(MailAccount.email == email_value).first()
+    if account is not None:
+        return account
+
+    return (
+        db.query(MailAccount)
+        .filter(func.lower(MailAccount.email) == email_value.lower())
+        .first()
+    )
+
+
+def build_mails_response(account: MailAccount, db: Session, folder: str, limit: int) -> dict:
+    """收件箱取件公共逻辑：文件夹校验、耗时日志、错误转换，供按 ID 与按邮箱两个接口复用。"""
+    normalized_folder = (folder or "inbox").strip().lower()
+    if normalized_folder not in ALLOWED_MAIL_FOLDERS:
+        raise HTTPException(status_code=400, detail="folder 仅支持 inbox 或 junk")
+
+    started_at = perf_counter()
+    logger.info(
+        "收信箱业务开始: account_id=%s email=%s folder=%s limit=%s",
+        account.id,
+        account.email,
+        normalized_folder,
+        limit,
+    )
+
+    try:
+        items = load_account_mails(account, db, folder=normalized_folder, limit=limit)
+    except MailServiceError as exc:
+        logger.warning(
+            "收信箱业务结束: account_id=%s email=%s result=failed error=%s duration_ms=%.1f",
+            account.id,
+            account.email,
+            exc.message,
+            (perf_counter() - started_at) * 1000,
+        )
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+
+    logger.info(
+        "收信箱业务结束: account_id=%s email=%s result=success item_count=%s duration_ms=%.1f",
+        account.id,
+        account.email,
+        len(items),
+        (perf_counter() - started_at) * 1000,
+    )
+    return {
+        "account_id": account.id,
+        "email": account.email,
+        "folder": normalized_folder,
+        "count": len(items),
+        "items": items,
+    }
+
+
+@app.get("/api/accounts/mails", dependencies=[Depends(require_mail_api_token)])
+def get_mails_by_email(
+    email: str = Query(..., description="邮箱地址，例如 demo@hotmail.com"),
+    folder: str = Query(default="inbox", description="inbox=收件箱，junk=垃圾箱"),
+    limit: int = Query(default=DEFAULT_MAIL_LIMIT, ge=1, le=MAX_MAIL_LIMIT),
+    db: Session = Depends(get_db),
+):
+    """按邮箱地址取件，避免第三方调用方依赖数据库内部自增 ID。"""
+    started_at = perf_counter()
+    account = resolve_account_by_email(db, email)
+    if account is None:
+        logger.info(
+            "收信箱业务结束: email=%s result=not_found duration_ms=%.1f",
+            email,
+            (perf_counter() - started_at) * 1000,
+        )
+        raise HTTPException(status_code=404, detail="account not found")
+
+    return build_mails_response(account, db, folder, limit)
+
+
 @app.get("/api/accounts/{account_id}/mails", dependencies=[Depends(require_token)])
 def get_account_mails(
     account_id: int,
     folder: str = Query(default="inbox"),
     db: Session = Depends(get_db),
 ):
+    """保留按 ID 取件的老接口，供后台页面使用，避免影响已有调用方。"""
     started_at = perf_counter()
-    logger.info(
-        "收信箱业务开始: account_id=%s folder=%s limit=%s",
-        account_id,
-        folder,
-        20,
-    )
     account = db.query(MailAccount).filter(MailAccount.id == account_id).first()
     if account is None:
         logger.info(
@@ -369,23 +467,7 @@ def get_account_mails(
         )
         raise HTTPException(status_code=404, detail="account not found")
 
-    try:
-        items = load_account_mails(account, db, folder=folder, limit=20)
-        logger.info(
-            "收信箱业务结束: account_id=%s result=success item_count=%s duration_ms=%.1f",
-            account_id,
-            len(items),
-            (perf_counter() - started_at) * 1000,
-        )
-        return {"items": items}
-    except MailServiceError as exc:
-        logger.warning(
-            "收信箱业务结束: account_id=%s result=failed error=%s duration_ms=%.1f",
-            account_id,
-            exc.message,
-            (perf_counter() - started_at) * 1000,
-        )
-        raise HTTPException(status_code=400, detail=exc.message)
+    return build_mails_response(account, db, folder, DEFAULT_MAIL_LIMIT)
 
 
 @app.get("/api/token-refresh-logs", dependencies=[Depends(require_token)])

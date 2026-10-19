@@ -108,6 +108,24 @@ abc2@hotmail.com----123456----clientidxxxx----refresh_token_xxx
 
 在邮件查看页面中，还可以开启自动刷新，便于持续观察目标邮箱的新邮件。
 
+#### 对外取件接口
+
+第三方调用方可以直接用邮箱地址取件，不需要知道数据库内部 ID：
+
+```text
+GET /api/accounts/mails?email=demo@hotmail.com&folder=inbox
+GET /api/accounts/mails?email=demo@hotmail.com&folder=junk
+```
+
+参数说明：
+
+- `email`：必填，邮箱地址，大小写不敏感
+- `folder`：可选，`inbox` 收件箱（默认）、`junk` 垃圾箱
+- `limit`：可选，返回邮件数量，`1~50`，默认 `20`
+- 鉴权：支持请求头 `X-Token`，也支持查询参数 `token`（方便脚本或浏览器直接调用）
+
+后台页面仍使用原有的按 ID 取件接口 `GET /api/accounts/{account_id}/mails?folder=inbox`，两者返回结构一致。
+
 ### 5. 每日自动更新令牌
 
 项目内置后台调度器，应用启动后会自动开启。
