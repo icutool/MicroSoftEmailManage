@@ -99,6 +99,7 @@ const elements = {
     mailAccountRemark: document.getElementById("mail-account-remark"),
     toggleAutoRefreshBtn: document.getElementById("toggle-auto-refresh-btn"),
     proxyUrlInput: document.getElementById("proxy-url-input"),
+    proxyUserInput: document.getElementById("proxy-user-input"),
     proxyStatus: document.getElementById("proxy-status"),
     proxyMessage: document.getElementById("proxy-message"),
     saveProxyBtn: document.getElementById("save-proxy-btn"),
@@ -414,6 +415,7 @@ function updateViewActions() {
 
 function setProxyFormLoading(isLoading) {
     elements.proxyUrlInput.disabled = isLoading;
+    elements.proxyUserInput.disabled = isLoading;
     elements.saveProxyBtn.disabled = isLoading;
     elements.clearProxyBtn.disabled = isLoading;
 }
@@ -430,6 +432,7 @@ async function loadProxySettings() {
     try {
         const data = await api("/api/settings/proxy");
         elements.proxyUrlInput.value = data.proxy_url || "";
+        elements.proxyUserInput.value = data.proxy_user || "";
         updateProxyStatus(Boolean(data.enabled));
         setMessage(elements.proxyMessage, "代理设置已从数据库加载", false);
     } catch (error) {
@@ -440,16 +443,19 @@ async function loadProxySettings() {
     }
 }
 
-async function saveProxySettings(proxyUrl = elements.proxyUrlInput.value.trim()) {
+async function saveProxySettings(clear = false) {
+    const proxyUrl = clear ? "" : elements.proxyUrlInput.value.trim();
+    const proxyUser = clear ? "" : elements.proxyUserInput.value;
     setProxyFormLoading(true);
     setMessage(elements.proxyMessage, "正在保存代理设置...", false);
 
     try {
         const data = await api("/api/settings/proxy", {
             method: "PUT",
-            body: JSON.stringify({ proxy_url: proxyUrl })
+            body: JSON.stringify({ proxy_url: proxyUrl, proxy_user: proxyUser })
         });
         elements.proxyUrlInput.value = data.proxy_url || "";
+        elements.proxyUserInput.value = data.proxy_user || "";
         updateProxyStatus(Boolean(data.enabled));
         setMessage(
             elements.proxyMessage,
@@ -1493,7 +1499,7 @@ elements.exportAccountsBtn.addEventListener("click", exportAccounts);
 elements.refreshAccountsBtn.addEventListener("click", () => loadAccounts());
 elements.refreshLogRunBtn.addEventListener("click", triggerTokenRefreshTask);
 elements.saveProxyBtn.addEventListener("click", () => saveProxySettings());
-elements.clearProxyBtn.addEventListener("click", () => saveProxySettings(""));
+elements.clearProxyBtn.addEventListener("click", () => saveProxySettings(true));
 elements.saveTagsBtn.addEventListener("click", saveTags);
 elements.saveRemarkBtn.addEventListener("click", saveRemark);
 elements.openMailsBtn.addEventListener("click", openSelectedAccountMails);

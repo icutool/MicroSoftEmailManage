@@ -18,8 +18,8 @@ from sqlalchemy.orm import Session
 
 from models import MailAccount
 from oauth_service import OAuthServiceError, get_valid_access_token
-from proxy_config import get_proxy_authorization_header, normalize_http_proxy_url
-from settings_service import get_mail_proxy_url
+from proxy_config import get_proxy_authorization_header, normalize_http_proxy_url, normalize_proxy_user
+from settings_service import get_mail_proxy_settings
 
 
 IMAP_HOST = "outlook.live.com"
@@ -290,8 +290,10 @@ class ProxyIMAP4SSL(imaplib.IMAP4_SSL):
         ssl_context=None,
         timeout=None,
         proxy_url=None,
+        proxy_user=None,
     ):
         self.proxy_url = normalize_http_proxy_url(proxy_url)
+        self.proxy_user = normalize_proxy_user(proxy_user)
         super().__init__(host, port, ssl_context=ssl_context, timeout=timeout)
 
     def _create_socket(self, timeout):
@@ -308,7 +310,7 @@ class ProxyIMAP4SSL(imaplib.IMAP4_SSL):
                 f"Host: {target}",
                 "Proxy-Connection: Keep-Alive",
             ]
-            authorization = get_proxy_authorization_header(self.proxy_url)
+            authorization = get_proxy_authorization_header(self.proxy_url, self.proxy_user)
             if authorization:
                 request_lines.append(f"Proxy-Authorization: {authorization}")
             proxy_socket.sendall(("\r\n".join(request_lines) + "\r\n\r\n").encode("ascii"))
@@ -370,19 +372,25 @@ def load_mail_messages(
     limit: int = 20,
 ):
     started_at = perf_counter()
-    proxy_url = get_mail_proxy_url(db)
+    proxy_url, proxy_user = get_mail_proxy_settings(db)
     logger.info(
-        "读取邮件开始: account_id=%s email=%s folder=%s limit=%s route=%s",
+        "读取邮件开始: account_id=%s email=%s folder=%s limit=%s route=%s proxy_auth=%s",
         account.id,
         account.email,
         folder,
         limit,
         "http_proxy" if proxy_url else "direct",
+        bool(proxy_url and proxy_user),
     )
 
     token_started_at = perf_counter()
     try:
-        access_token = get_valid_access_token(account, db, proxy_url=proxy_url)
+        access_token = get_valid_access_token(
+            account,
+            db,
+            proxy_url=proxy_url,
+            proxy_user=proxy_user,
+        )
     except HTTPError as exc:
         logger.warning(
             "读取邮件失败: account_id=%s stage=access_token error_type=%s error=%s duration_ms=%.1f",
@@ -414,7 +422,12 @@ def load_mail_messages(
     graceful_logout = False
     try:
         connect_started_at = perf_counter()
-        mail = ProxyIMAP4SSL(IMAP_HOST, timeout=IMAP_TIMEOUT_SECONDS, proxy_url=proxy_url)
+        mail = ProxyIMAP4SSL(
+            IMAP_HOST,
+            timeout=IMAP_TIMEOUT_SECONDS,
+            proxy_url=proxy_url,
+            proxy_user=proxy_user,
+        )
         logger.info(
             "读取邮件阶段耗时: account_id=%s stage=imap_connect duration_ms=%.1f timeout_seconds=%s route=%s",
             account.id,

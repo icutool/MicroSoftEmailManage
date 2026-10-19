@@ -256,6 +256,19 @@
                                 <p class="muted">留空并保存即可直连。代理需支持 CONNECT 到 outlook.live.com:993。</p>
                             </div>
 
+                            <div class="stack gap-sm">
+                                <label class="field-label" for="proxy-user-input">代理认证（可选）</label>
+                                <input
+                                    id="proxy-user-input"
+                                    class="input"
+                                    type="password"
+                                    autocomplete="new-password"
+                                    spellcheck="false"
+                                    placeholder="proxyuser:xtXT1234"
+                                >
+                                <p class="muted">需要认证时填写“用户名:密码”，例如 proxyuser:xtXT1234；无需认证则留空。</p>
+                            </div>
+
                             <div class="action-row">
                                 <button id="save-proxy-btn" class="button" type="button">保存代理设置</button>
                                 <button id="clear-proxy-btn" class="button button-ghost" type="button">清空并直连</button>

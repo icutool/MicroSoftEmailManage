@@ -6,7 +6,7 @@ import requests
 from sqlalchemy.orm import Session
 
 from models import MailAccount, MailRefreshTokenHistory
-from proxy_config import build_requests_proxy_map, normalize_http_proxy_url
+from proxy_config import build_requests_proxy_map, normalize_http_proxy_url, normalize_proxy_user
 
 
 TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
@@ -34,6 +34,7 @@ def get_valid_access_token(
     account: MailAccount,
     db: Session,
     proxy_url: str | None = None,
+    proxy_user: str | None = None,
 ) -> str:
     now = int(time.time())
     if account.cached_access_token and account.access_token_expire_time > now:
@@ -48,11 +49,13 @@ def get_valid_access_token(
     old_refresh_token = account.refresh_token
     started_at = perf_counter()
     proxy_url = normalize_http_proxy_url(proxy_url)
+    proxy_user = normalize_proxy_user(proxy_user)
     logger.info(
-        "OAuth access_token 缓存未命中，开始刷新: account_id=%s email=%s route=%s",
+        "OAuth access_token 缓存未命中，开始刷新: account_id=%s email=%s route=%s proxy_auth=%s",
         account.id,
         account.email,
         "http_proxy" if proxy_url else "direct",
+        bool(proxy_url and proxy_user),
     )
     try:
         # 不读取系统代理环境变量，只使用数据库中通过网页设置的代理地址。
@@ -66,7 +69,7 @@ def get_valid_access_token(
                     "refresh_token": old_refresh_token,
                 },
                 timeout=20,
-                proxies=build_requests_proxy_map(proxy_url),
+                proxies=build_requests_proxy_map(proxy_url, proxy_user),
             )
     except requests.RequestException as exc:
         logger.warning(
