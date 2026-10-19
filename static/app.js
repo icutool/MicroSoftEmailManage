@@ -1,14 +1,20 @@
 const AUTO_REFRESH_INTERVAL = 15000;
 const NO_TAG_FILTER_VALUE = "__NO_TAG__";
-// 标签筛选的两种模式：include = 只看选中标签，exclude = 排除选中标签
-const TAG_FILTER_MODE_INCLUDE = "include";
-const TAG_FILTER_MODE_EXCLUDE = "exclude";
+// 邮件页标签筛选支持两种条件，且可以同时生效：include = 只看勾选的标签，exclude = 过滤掉勾选的标签
+const TAG_FILTER_INCLUDE = "include";
+const TAG_FILTER_EXCLUDE = "exclude";
+const TAG_FILTER_MODES = [TAG_FILTER_INCLUDE, TAG_FILTER_EXCLUDE];
 const MOBILE_LAYOUT_BREAKPOINT = 980;
 const DEFAULT_LOG_PAGE_SIZE = 10;
 
 const state = {
     token: localStorage.getItem("mail_manager_token") || "",
     accounts: [],
+    // 邮件页的标签筛选条件：包含集合与排除集合同时参与过滤
+    mailTagFilter: {
+        include: new Set(),
+        exclude: new Set()
+    },
     selectedAccountId: null,
     tagModalAccountId: null,
     tagModalReturnFocus: null,
@@ -59,8 +65,6 @@ const elements = {
     mailSearchInput: document.getElementById("mail-search-input"),
     mailStepButtons: Array.from(document.querySelectorAll("[data-mail-step-target]")),
     mailStepPanels: Array.from(document.querySelectorAll("[data-mail-step]")),
-    mailTagFilter: document.getElementById("mail-tag-filter"),
-    mailTagFilterMode: document.getElementById("mail-tag-filter-mode"),
     menuItems: Array.from(document.querySelectorAll(".menu-item")),
     mobileMailSteps: document.querySelector(".mobile-mail-steps"),
     openMailsBtn: document.getElementById("open-mails-btn"),
@@ -110,6 +114,24 @@ const elements = {
     clearProxyBtn: document.getElementById("clear-proxy-btn"),
     viewPanels: Array.from(document.querySelectorAll(".view-panel")),
     viewTitle: document.getElementById("view-title")
+};
+
+// 邮件页的两个标签筛选下拉（包含 / 排除）对应的 DOM
+const tagFilterUi = {
+    include: {
+        trigger: document.getElementById("mail-tag-include-trigger"),
+        label: document.getElementById("mail-tag-include-label"),
+        panel: document.getElementById("mail-tag-include-panel"),
+        options: document.getElementById("mail-tag-include-options"),
+        clearBtn: document.getElementById("mail-tag-include-clear")
+    },
+    exclude: {
+        trigger: document.getElementById("mail-tag-exclude-trigger"),
+        label: document.getElementById("mail-tag-exclude-label"),
+        panel: document.getElementById("mail-tag-exclude-panel"),
+        options: document.getElementById("mail-tag-exclude-options"),
+        clearBtn: document.getElementById("mail-tag-exclude-clear")
+    }
 };
 
 const text = {
@@ -325,25 +347,31 @@ function getAllAvailableTags() {
 
 function updateTagFilterOptions() {
     const availableTags = getAllAvailableTags();
-    [elements.tagFilter, elements.mailTagFilter].forEach((select) => {
-        const currentValue = select.value;
-        const options = [
-            { value: "", label: "全部标签" },
-            { value: NO_TAG_FILTER_VALUE, label: "无标签" },
-            ...availableTags.map((tag) => ({ value: tag, label: tag }))
-        ];
 
-        select.replaceChildren(...options.map(({ value, label }) => {
-            const option = document.createElement("option");
-            option.value = value;
-            option.textContent = label;
-            return option;
-        }));
-        const hasCurrentValue = currentValue === ""
-            || currentValue === NO_TAG_FILTER_VALUE
-            || availableTags.includes(currentValue);
-        select.value = hasCurrentValue ? currentValue : "";
-    });
+    // 账号管理页保持单选下拉（只做“包含”筛选）
+    const select = elements.tagFilter;
+    const currentValue = select.value;
+    const options = [
+        { value: "", label: "全部标签" },
+        { value: NO_TAG_FILTER_VALUE, label: "无标签" },
+        ...availableTags.map((tag) => ({ value: tag, label: tag }))
+    ];
+
+    select.replaceChildren(...options.map(({ value, label }) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        return option;
+    }));
+    const hasCurrentValue = currentValue === ""
+        || currentValue === NO_TAG_FILTER_VALUE
+        || availableTags.includes(currentValue);
+    select.value = hasCurrentValue ? currentValue : "";
+
+    // 邮件页使用多选面板（包含 / 排除），标签列表变化后重建选项并清理已失效的勾选
+    pruneMailTagFilter(availableTags);
+    renderTagFilterOptions(availableTags);
+    updateTagFilterTriggerLabels();
 }
 
 function getMailBodyRenderMode(body) {
@@ -385,21 +413,143 @@ function getTagFilterLabel(selectedTag) {
     return selectedTag === NO_TAG_FILTER_VALUE ? "无标签" : selectedTag;
 }
 
-function matchesTagFilter(account, selectedTag, mode = TAG_FILTER_MODE_INCLUDE) {
+function getMailTagFilterEntries(availableTags) {
+    return [
+        { value: NO_TAG_FILTER_VALUE, label: "无标签" },
+        ...availableTags.map((tag) => ({ value: tag, label: tag }))
+    ];
+}
+
+// 标签被删除或改名后，把已失效的勾选从筛选条件里移除
+function pruneMailTagFilter(availableTags) {
+    TAG_FILTER_MODES.forEach((mode) => {
+        const selected = state.mailTagFilter[mode];
+        Array.from(selected).forEach((tag) => {
+            if (tag !== NO_TAG_FILTER_VALUE && !availableTags.includes(tag)) {
+                selected.delete(tag);
+            }
+        });
+    });
+}
+
+function renderTagFilterOptions(availableTags) {
+    const entries = getMailTagFilterEntries(availableTags);
+
+    TAG_FILTER_MODES.forEach((mode) => {
+        const container = tagFilterUi[mode].options;
+        container.replaceChildren(...entries.map(({ value, label }) => {
+            const option = document.createElement("label");
+            option.className = "tag-filter-option";
+            option.dataset.tagValue = value;
+
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.addEventListener("change", () => {
+                toggleMailTagFilter(mode, value, checkbox.checked);
+            });
+
+            const caption = document.createElement("span");
+            caption.textContent = label;
+
+            option.append(checkbox, caption);
+            return option;
+        }));
+    });
+
+    syncTagFilterOptionState();
+}
+
+// 同步勾选状态：同一个标签不能同时出现在包含和排除里，冲突项直接禁用
+function syncTagFilterOptionState() {
+    TAG_FILTER_MODES.forEach((mode) => {
+        const selected = state.mailTagFilter[mode];
+        const opposite = state.mailTagFilter[getOppositeTagFilterMode(mode)];
+
+        tagFilterUi[mode].options.querySelectorAll(".tag-filter-option").forEach((option) => {
+            const value = option.dataset.tagValue;
+            const isSelected = selected.has(value);
+            const isConflict = opposite.has(value);
+            const checkbox = option.querySelector("input");
+
+            option.classList.toggle("is-selected", isSelected);
+            option.classList.toggle("is-disabled", isConflict);
+            checkbox.checked = isSelected;
+            checkbox.disabled = isConflict;
+        });
+    });
+}
+
+function getOppositeTagFilterMode(mode) {
+    return mode === TAG_FILTER_INCLUDE ? TAG_FILTER_EXCLUDE : TAG_FILTER_INCLUDE;
+}
+
+function toggleMailTagFilter(mode, tag, isChecked) {
+    const selected = state.mailTagFilter[mode];
+
+    if (isChecked) {
+        selected.add(tag);
+        // 同一个标签不允许同时包含和排除，勾选时自动从另一边移除
+        state.mailTagFilter[getOppositeTagFilterMode(mode)].delete(tag);
+    } else {
+        selected.delete(tag);
+    }
+
+    syncTagFilterOptionState();
+    updateTagFilterTriggerLabels();
+    renderAccounts();
+}
+
+function clearMailTagFilter(mode) {
+    if (!state.mailTagFilter[mode].size) {
+        return;
+    }
+
+    state.mailTagFilter[mode].clear();
+    syncTagFilterOptionState();
+    updateTagFilterTriggerLabels();
+    renderAccounts();
+}
+
+function formatTagFilterTriggerLabel(mode) {
+    const prefix = mode === TAG_FILTER_INCLUDE ? "包含" : "排除";
+    const selected = Array.from(state.mailTagFilter[mode]).map(getTagFilterLabel);
+    if (!selected.length) {
+        return `${prefix}标签`;
+    }
+
+    return `${prefix}：${selected.join("、")}`;
+}
+
+function updateTagFilterTriggerLabels() {
+    TAG_FILTER_MODES.forEach((mode) => {
+        const ui = tagFilterUi[mode];
+        const label = formatTagFilterTriggerLabel(mode);
+        ui.label.textContent = label;
+        ui.trigger.title = label;
+        ui.trigger.classList.toggle("is-active", state.mailTagFilter[mode].size > 0);
+    });
+}
+
+function setTagFilterPanelOpen(openMode) {
+    TAG_FILTER_MODES.forEach((mode) => {
+        const ui = tagFilterUi[mode];
+        const isOpen = mode === openMode;
+        ui.panel.hidden = !isOpen;
+        ui.trigger.setAttribute("aria-expanded", isOpen ? "true" : "false");
+        ui.trigger.classList.toggle("is-open", isOpen);
+    });
+}
+
+function closeTagFilterPanels() {
+    setTagFilterPanelOpen(null);
+}
+
+function matchesTagFilter(account, selectedTag) {
     if (!selectedTag) {
         return true;
     }
 
     const tags = parseTags(account.tags);
-    if (mode === TAG_FILTER_MODE_EXCLUDE) {
-        // 排除模式：选中“无标签”时表示排除掉所有带标签的账号，选中具体标签时表示排除包含该标签的账号
-        if (selectedTag === NO_TAG_FILTER_VALUE) {
-            return tags.length > 0;
-        }
-
-        return !tags.includes(selectedTag);
-    }
-
     if (selectedTag === NO_TAG_FILTER_VALUE) {
         return tags.length === 0;
     }
@@ -407,11 +557,58 @@ function matchesTagFilter(account, selectedTag, mode = TAG_FILTER_MODE_INCLUDE) 
     return tags.includes(selectedTag);
 }
 
-function getFilteredAccounts(keyword, selectedTag = "", mode = TAG_FILTER_MODE_INCLUDE) {
+function getFilteredAccounts(keyword, selectedTag = "") {
     const query = keyword.trim().toLowerCase();
     return state.accounts.filter((account) => {
         const matchesKeyword = !query || account.email.toLowerCase().includes(query);
-        return matchesKeyword && matchesTagFilter(account, selectedTag, mode);
+        return matchesKeyword && matchesTagFilter(account, selectedTag);
+    });
+}
+
+// 邮件页标签筛选：排除条件优先命中即淘汰，包含条件之间是“或”的关系（命中任意一个即可）
+function matchesMailTagFilters(account, includeTags, excludeTags) {
+    const tags = parseTags(account.tags);
+
+    for (const excluded of excludeTags) {
+        if (excluded === NO_TAG_FILTER_VALUE) {
+            if (tags.length > 0) {
+                return false;
+            }
+            continue;
+        }
+
+        if (tags.includes(excluded)) {
+            return false;
+        }
+    }
+
+    if (!includeTags.size) {
+        return true;
+    }
+
+    for (const included of includeTags) {
+        if (included === NO_TAG_FILTER_VALUE) {
+            if (!tags.length) {
+                return true;
+            }
+            continue;
+        }
+
+        if (tags.includes(included)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function getMailFilteredAccounts(keyword) {
+    const query = keyword.trim().toLowerCase();
+    const { include, exclude } = state.mailTagFilter;
+
+    return state.accounts.filter((account) => {
+        const matchesKeyword = !query || account.email.toLowerCase().includes(query);
+        return matchesKeyword && matchesMailTagFilters(account, include, exclude);
     });
 }
 
@@ -648,23 +845,11 @@ function renderAccountButtons(container, accounts, options) {
 
 function renderAccounts() {
     const accountMatches = getFilteredAccounts(elements.searchInput.value, elements.tagFilter.value);
-    const mailTagMode = elements.mailTagFilterMode.value === TAG_FILTER_MODE_EXCLUDE
-        ? TAG_FILTER_MODE_EXCLUDE
-        : TAG_FILTER_MODE_INCLUDE;
-    const mailMatches = getFilteredAccounts(
-        elements.mailSearchInput.value,
-        elements.mailTagFilter.value,
-        mailTagMode
-    );
+    const mailMatches = getMailFilteredAccounts(elements.mailSearchInput.value);
 
     elements.accountCount.textContent = text.accountCount(state.accounts.length);
     elements.accountFilterSummary.textContent = text.visibleAccountCount(accountMatches.length, state.accounts.length);
-    // 排除模式下在统计文案后面补充当前排除的标签，避免用户误判筛选结果
-    const mailSummary = [text.visibleAccountCount(mailMatches.length, state.accounts.length)];
-    if (mailTagMode === TAG_FILTER_MODE_EXCLUDE && elements.mailTagFilter.value) {
-        mailSummary.push(`（已排除标签：${getTagFilterLabel(elements.mailTagFilter.value)}）`);
-    }
-    elements.mailFilterSummary.textContent = mailSummary.join(" ");
+    renderMailFilterSummary(mailMatches.length);
     renderAccountButtons(elements.accountList, accountMatches, {
         onSelect: selectAccountForManage
     });
@@ -675,6 +860,22 @@ function renderAccounts() {
         showSetTagsButton: true,
         showSetRemarkButton: true
     });
+}
+
+// 邮件页筛选统计：在数量后面追加当前生效的包含/排除标签，避免用户误判筛选结果
+function renderMailFilterSummary(visibleCount) {
+    const chips = [];
+    TAG_FILTER_MODES.forEach((mode) => {
+        const prefix = mode === TAG_FILTER_INCLUDE ? "包含" : "排除";
+        Array.from(state.mailTagFilter[mode]).forEach((tag) => {
+            chips.push(
+                `<span class="filter-chip filter-chip-${mode}">${prefix}：${escapeHtml(getTagFilterLabel(tag))}</span>`
+            );
+        });
+    });
+
+    const base = escapeHtml(text.visibleAccountCount(visibleCount, state.accounts.length));
+    elements.mailFilterSummary.innerHTML = chips.length ? `${base} ${chips.join("")}` : base;
 }
 
 function renderRefreshLogPagination() {
@@ -1558,8 +1759,29 @@ elements.logoutBtn.addEventListener("click", () => {
 elements.searchInput.addEventListener("input", renderAccounts);
 elements.mailSearchInput.addEventListener("input", renderAccounts);
 elements.tagFilter.addEventListener("change", renderAccounts);
-elements.mailTagFilter.addEventListener("change", renderAccounts);
-elements.mailTagFilterMode.addEventListener("change", renderAccounts);
+TAG_FILTER_MODES.forEach((mode) => {
+    const ui = tagFilterUi[mode];
+    ui.trigger.addEventListener("click", (event) => {
+        // 阻止冒泡，否则会被下面的“点击外部关闭”逻辑立刻关掉
+        event.stopPropagation();
+        setTagFilterPanelOpen(ui.panel.hidden ? mode : null);
+    });
+    ui.clearBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        clearMailTagFilter(mode);
+    });
+});
+document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest(".tag-filter")) {
+        closeTagFilterPanels();
+    }
+});
+document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+        closeTagFilterPanels();
+    }
+});
 elements.refreshLogPage.addEventListener("change", async () => {
     state.logsPagination.page = Number(elements.refreshLogPage.value) || 1;
     await loadTokenRefreshLogs();

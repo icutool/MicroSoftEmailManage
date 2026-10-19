@@ -134,21 +134,39 @@
                         <div class="panel-head">
                             <div>
                                 <h3>选择邮箱</h3>
-                                <p class="muted">先按邮箱搜索或按标签筛选（可切换包含/排除），再选择要查看邮件的账号</p>
+                                <p class="muted">先按邮箱搜索，再按标签包含/排除筛选，然后选择要查看邮件的账号</p>
                             </div>
                         </div>
 
                         <div class="stack gap-sm">
-                            <div class="filter-row filter-row-tag-mode">
-                                <input id="mail-search-input" class="input" type="text" placeholder="搜索邮箱">
-                                <select id="mail-tag-filter" class="input filter-select">
-                                    <option value="">全部标签</option>
-                                    <option value="__NO_TAG__">无标签</option>
-                                </select>
-                                <select id="mail-tag-filter-mode" class="input filter-select" title="切换标签筛选方式">
-                                    <option value="include">包含标签</option>
-                                    <option value="exclude">排除标签</option>
-                                </select>
+                            <input id="mail-search-input" class="input" type="text" placeholder="搜索邮箱">
+                            <div class="filter-row filter-row-tag-filters">
+                                <div class="tag-filter">
+                                    <button id="mail-tag-include-trigger" class="input filter-select tag-filter-trigger" type="button" aria-haspopup="true" aria-expanded="false">
+                                        <span id="mail-tag-include-label" class="tag-filter-trigger-label">包含标签</span>
+                                        <span class="tag-filter-caret" aria-hidden="true">▾</span>
+                                    </button>
+                                    <div id="mail-tag-include-panel" class="tag-filter-panel" hidden>
+                                        <div class="tag-filter-panel-head">
+                                            <span>勾选要包含的标签</span>
+                                            <button id="mail-tag-include-clear" class="tag-filter-clear" type="button">清空</button>
+                                        </div>
+                                        <div id="mail-tag-include-options" class="tag-filter-options"></div>
+                                    </div>
+                                </div>
+                                <div class="tag-filter">
+                                    <button id="mail-tag-exclude-trigger" class="input filter-select tag-filter-trigger" type="button" aria-haspopup="true" aria-expanded="false">
+                                        <span id="mail-tag-exclude-label" class="tag-filter-trigger-label">排除标签</span>
+                                        <span class="tag-filter-caret" aria-hidden="true">▾</span>
+                                    </button>
+                                    <div id="mail-tag-exclude-panel" class="tag-filter-panel" hidden>
+                                        <div class="tag-filter-panel-head">
+                                            <span>勾选要排除的标签</span>
+                                            <button id="mail-tag-exclude-clear" class="tag-filter-clear" type="button">清空</button>
+                                        </div>
+                                        <div id="mail-tag-exclude-options" class="tag-filter-options"></div>
+                                    </div>
+                                </div>
                             </div>
                             <p id="mail-filter-summary" class="filter-summary">当前显示 0 / 总计 0 个邮箱</p>
                             <div id="mail-account-list" class="account-list"></div>
