@@ -1,5 +1,6 @@
 import time
 import logging
+from time import perf_counter
 
 import requests
 from sqlalchemy.orm import Session
@@ -21,23 +22,51 @@ logger.propagate = False
 
 
 class OAuthServiceError(Exception):
-    pass
+    def __init__(self, message: str, tag: str | None = "token_invalid"):
+        super().__init__(message)
+        self.message = message
+        # 网络暂时不可用时不能把账号误判成令牌失效，因此允许调用方关闭自动打标。
+        self.tag = tag
 
 
 def get_valid_access_token(account: MailAccount, db: Session) -> str:
     now = int(time.time())
     if account.cached_access_token and account.access_token_expire_time > now:
+        logger.info(
+            "OAuth access_token 命中缓存: account_id=%s email=%s remaining_seconds=%s",
+            account.id,
+            account.email,
+            account.access_token_expire_time - now,
+        )
         return account.cached_access_token
 
     old_refresh_token = account.refresh_token
-    response = requests.post(
-        TOKEN_URL,
-        data={
-            "client_id": account.client_id,
-            "grant_type": "refresh_token",
-            "refresh_token": old_refresh_token,
-        },
-        timeout=20,
+    started_at = perf_counter()
+    logger.info("OAuth access_token 缓存未命中，开始刷新: account_id=%s email=%s", account.id, account.email)
+    try:
+        response = requests.post(
+            TOKEN_URL,
+            data={
+                "client_id": account.client_id,
+                "grant_type": "refresh_token",
+                "refresh_token": old_refresh_token,
+            },
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        logger.warning(
+            "OAuth 刷新接口失败: account_id=%s error_type=%s error=%s duration_ms=%.1f",
+            account.id,
+            type(exc).__name__,
+            exc,
+            (perf_counter() - started_at) * 1000,
+        )
+        raise OAuthServiceError(f"OAuth request failed: {exc}", tag=None) from exc
+    logger.info(
+        "OAuth 刷新接口响应: account_id=%s status=%s duration_ms=%.1f",
+        account.id,
+        response.status_code,
+        (perf_counter() - started_at) * 1000,
     )
     response.raise_for_status()
     payload = response.json()
@@ -70,4 +99,9 @@ def get_valid_access_token(account: MailAccount, db: Session) -> str:
     account.access_token_expire_time = now + TOKEN_CACHE_SECONDS
     db.commit()
     db.refresh(account)
+    logger.info(
+        "OAuth access_token 刷新完成: account_id=%s duration_ms=%.1f",
+        account.id,
+        (perf_counter() - started_at) * 1000,
+    )
     return access_token

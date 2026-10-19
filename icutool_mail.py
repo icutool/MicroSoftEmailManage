@@ -1,9 +1,11 @@
 import os
+import logging
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 from urllib.parse import quote
+from time import perf_counter
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -28,6 +30,15 @@ from token_refresh_service import (
 
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+
+
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
 
 Base.metadata.create_all(bind=engine)
 
@@ -126,6 +137,27 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Hotmail Mail Manager", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+
+@app.middleware("http")
+async def log_request_timing(request: Request, call_next):
+    """记录每个 HTTP 请求耗时，便于区分接口、数据库和外部邮箱服务的延迟。"""
+    started_at = perf_counter()
+    response = None
+    try:
+        response = await call_next(request)
+        return response
+    except Exception:
+        logger.exception("HTTP 请求异常: method=%s path=%s", request.method, request.url.path)
+        raise
+    finally:
+        logger.info(
+            "HTTP 请求完成: method=%s path=%s status=%s duration_ms=%.1f",
+            request.method,
+            request.url.path,
+            response.status_code if response is not None else 500,
+            (perf_counter() - started_at) * 1000,
+        )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -290,14 +322,38 @@ def get_account_mails(
     folder: str = Query(default="inbox"),
     db: Session = Depends(get_db),
 ):
+    started_at = perf_counter()
+    logger.info(
+        "收信箱业务开始: account_id=%s folder=%s limit=%s",
+        account_id,
+        folder,
+        20,
+    )
     account = db.query(MailAccount).filter(MailAccount.id == account_id).first()
     if account is None:
+        logger.info(
+            "收信箱业务结束: account_id=%s result=not_found duration_ms=%.1f",
+            account_id,
+            (perf_counter() - started_at) * 1000,
+        )
         raise HTTPException(status_code=404, detail="account not found")
 
     try:
         items = load_account_mails(account, db, folder=folder, limit=20)
+        logger.info(
+            "收信箱业务结束: account_id=%s result=success item_count=%s duration_ms=%.1f",
+            account_id,
+            len(items),
+            (perf_counter() - started_at) * 1000,
+        )
         return {"items": items}
     except MailServiceError as exc:
+        logger.warning(
+            "收信箱业务结束: account_id=%s result=failed error=%s duration_ms=%.1f",
+            account_id,
+            exc.message,
+            (perf_counter() - started_at) * 1000,
+        )
         raise HTTPException(status_code=400, detail=exc.message)
 
 

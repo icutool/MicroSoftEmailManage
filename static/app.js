@@ -17,6 +17,7 @@ const state = {
     loadedMailAccountId: null,
     loadedMailFolder: null,
     mailLoadRequestId: 0,
+    mailLoadInFlight: false,
     mailListEmptyText: "请选择一个邮箱账号后查看邮件",
     mailDetailEmptyText: "请选择一封邮件查看内容",
     autoRefreshEnabled: false,
@@ -931,9 +932,16 @@ async function loadMails({ silent = false } = {}) {
         return;
     }
 
+    // 自动刷新不能叠加慢速 IMAP 请求，否则旧请求虽然会被前端丢弃，
+    // 但仍会占用服务端连接和邮箱接口资源。
+    if (silent && state.mailLoadInFlight) {
+        return;
+    }
+
     const accountId = state.selectedAccountId;
     const folder = state.selectedFolder;
     const requestId = ++state.mailLoadRequestId;
+    state.mailLoadInFlight = true;
 
     try {
         if (!silent) {
@@ -969,6 +977,10 @@ async function loadMails({ silent = false } = {}) {
         renderMails();
         setMessage(elements.mailMessage, error.message, true);
         updateMailMobileView();
+    } finally {
+        if (state.mailLoadRequestId === requestId) {
+            state.mailLoadInFlight = false;
+        }
     }
 }
 

@@ -3,7 +3,11 @@ import html
 import imaplib
 import base64
 import binascii
+import logging
+import os
 import re
+import socket
+from time import perf_counter
 from datetime import timedelta, timezone
 from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
@@ -16,8 +20,21 @@ from oauth_service import OAuthServiceError, get_valid_access_token
 
 
 IMAP_HOST = "outlook.live.com"
+try:
+    IMAP_TIMEOUT_SECONDS = max(float(os.getenv("IMAP_TIMEOUT_SECONDS", "15")), 1.0)
+except ValueError:
+    IMAP_TIMEOUT_SECONDS = 15.0
 JUNK_CANDIDATES = ["Junk", "Junk Email", "Spam", "\u5783\u573e\u90ae\u4ef6"]
 CHINA_TZ = timezone(timedelta(hours=8))
+
+
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
 
 
 class MailServiceError(Exception):
@@ -260,40 +277,141 @@ def _select_folder(mail_client: imaplib.IMAP4_SSL, folder: str) -> None:
         raise MailServiceError(f"failed to open folder: {display_name}")
 
 
+def _fetch_mail_payloads(
+    mail_client: imaplib.IMAP4_SSL,
+    mail_ids: list[bytes],
+) -> list[tuple[bytes, bytes]]:
+    """一次批量获取邮件，避免逐封请求产生大量 IMAP 网络往返。"""
+    if not mail_ids:
+        return []
+
+    result, data = mail_client.fetch(b",".join(mail_ids), "(RFC822)")
+    if result != "OK":
+        raise MailServiceError("failed to fetch mails")
+
+    # IMAP 返回的数据通常是 ``(响应头, 原始邮件)`` 与结尾标记交错排列，
+    # 不能直接依赖返回顺序，因此从响应头提取序列号后再恢复搜索结果顺序。
+    payload_by_id: dict[bytes, bytes] = {}
+    for item in data or []:
+        if not isinstance(item, tuple) or len(item) < 2:
+            continue
+        response_header, raw_email = item[0], item[1]
+        if not isinstance(response_header, bytes) or not isinstance(raw_email, bytes):
+            continue
+        sequence_match = re.match(rb"(\d+)", response_header)
+        if sequence_match:
+            payload_by_id[sequence_match.group(1)] = raw_email
+
+    return [(mail_id, payload_by_id[mail_id]) for mail_id in mail_ids if mail_id in payload_by_id]
+
+
 def load_mail_messages(
     account: MailAccount,
     db: Session,
     folder: str = "inbox",
     limit: int = 20,
 ):
+    started_at = perf_counter()
+    logger.info(
+        "读取邮件开始: account_id=%s email=%s folder=%s limit=%s",
+        account.id,
+        account.email,
+        folder,
+        limit,
+    )
+
+    token_started_at = perf_counter()
     try:
         access_token = get_valid_access_token(account, db)
     except HTTPError as exc:
+        logger.warning(
+            "读取邮件失败: account_id=%s stage=access_token error_type=%s error=%s duration_ms=%.1f",
+            account.id,
+            type(exc).__name__,
+            exc,
+            (perf_counter() - started_at) * 1000,
+        )
         raise MailServiceError(f"token refresh failed: {exc}", tag="token_invalid") from exc
     except OAuthServiceError as exc:
-        raise MailServiceError(f"token refresh failed: {exc}", tag="token_invalid") from exc
+        logger.warning(
+            "读取邮件失败: account_id=%s stage=access_token error_type=%s error=%s duration_ms=%.1f",
+            account.id,
+            type(exc).__name__,
+            exc,
+            (perf_counter() - started_at) * 1000,
+        )
+        raise MailServiceError(
+            f"token refresh failed: {exc}",
+            tag=getattr(exc, "tag", "token_invalid"),
+        ) from exc
+    logger.info(
+        "读取邮件阶段耗时: account_id=%s stage=access_token duration_ms=%.1f",
+        account.id,
+        (perf_counter() - token_started_at) * 1000,
+    )
 
+    mail = None
+    graceful_logout = False
     try:
-        mail = imaplib.IMAP4_SSL(IMAP_HOST)
+        connect_started_at = perf_counter()
+        mail = imaplib.IMAP4_SSL(IMAP_HOST, timeout=IMAP_TIMEOUT_SECONDS)
+        logger.info(
+            "读取邮件阶段耗时: account_id=%s stage=imap_connect duration_ms=%.1f timeout_seconds=%s",
+            account.id,
+            (perf_counter() - connect_started_at) * 1000,
+            IMAP_TIMEOUT_SECONDS,
+        )
+
+        auth_started_at = perf_counter()
         mail.authenticate(
             "XOAUTH2",
             lambda _: _generate_auth_string(account.email, access_token),
         )
+        logger.info(
+            "读取邮件阶段耗时: account_id=%s stage=imap_auth duration_ms=%.1f",
+            account.id,
+            (perf_counter() - auth_started_at) * 1000,
+        )
+
+        select_started_at = perf_counter()
         _select_folder(mail, folder)
+        logger.info(
+            "读取邮件阶段耗时: account_id=%s stage=select_folder duration_ms=%.1f folder=%s",
+            account.id,
+            (perf_counter() - select_started_at) * 1000,
+            folder,
+        )
+
+        search_started_at = perf_counter()
         result, data = mail.search(None, "ALL")
         if result != "OK":
             raise MailServiceError("failed to search mails")
 
         # IMAP search returns byte-string sequence ids; sort them numerically
         # so values like 60/6/59 don't end up in lexicographic order.
-        mail_ids = sorted(data[0].split(), key=lambda value: int(value), reverse=True)[:limit]
-        items = []
-        for mail_id in mail_ids:
-            fetch_result, msg_data = mail.fetch(mail_id, "(RFC822)")
-            if fetch_result != "OK" or not msg_data or not msg_data[0]:
-                continue
+        all_mail_ids = data[0].split() if data and data[0] else []
+        mail_ids = sorted(all_mail_ids, key=lambda value: int(value), reverse=True)[:limit]
+        logger.info(
+            "读取邮件阶段耗时: account_id=%s stage=search duration_ms=%.1f total_ids=%s selected_ids=%s",
+            account.id,
+            (perf_counter() - search_started_at) * 1000,
+            len(all_mail_ids),
+            len(mail_ids),
+        )
 
-            raw_email = msg_data[0][1]
+        fetch_started_at = perf_counter()
+        fetched_payloads = _fetch_mail_payloads(mail, mail_ids)
+        logger.info(
+            "读取邮件阶段耗时: account_id=%s stage=batch_fetch duration_ms=%.1f requested=%s fetched=%s",
+            account.id,
+            (perf_counter() - fetch_started_at) * 1000,
+            len(mail_ids),
+            len(fetched_payloads),
+        )
+
+        parse_started_at = perf_counter()
+        items = []
+        for mail_id, raw_email in fetched_payloads:
             message = email.message_from_bytes(raw_email)
             try:
                 mail_dt = _format_mail_datetime(message["Date"])
@@ -311,10 +429,79 @@ def load_mail_messages(
                 }
             )
 
-        mail.logout()
+        logger.info(
+            "读取邮件阶段耗时: account_id=%s stage=parse duration_ms=%.1f items=%s",
+            account.id,
+            (perf_counter() - parse_started_at) * 1000,
+            len(items),
+        )
+        graceful_logout = True
         return items
+    except MailServiceError as exc:
+        logger.warning(
+            "读取邮件失败: account_id=%s stage=imap error=%s duration_ms=%.1f",
+            account.id,
+            exc.message,
+            (perf_counter() - started_at) * 1000,
+        )
+        raise
     except imaplib.IMAP4.error as exc:
+        logger.warning(
+            "读取邮件失败: account_id=%s stage=imap error_type=%s error=%s duration_ms=%.1f",
+            account.id,
+            type(exc).__name__,
+            exc,
+            (perf_counter() - started_at) * 1000,
+        )
         raise MailServiceError(f"imap login failed: {exc}") from exc
+    except (socket.timeout, TimeoutError, OSError) as exc:
+        logger.warning(
+            "读取邮件失败: account_id=%s email=%s error_type=%s error=%s duration_ms=%.1f",
+            account.id,
+            account.email,
+            type(exc).__name__,
+            exc,
+            (perf_counter() - started_at) * 1000,
+        )
+        raise MailServiceError(f"imap request timed out or failed: {exc}") from exc
+    finally:
+        if mail is not None:
+            close_started_at = perf_counter()
+            try:
+                if graceful_logout:
+                    try:
+                        mail.logout()
+                    except (imaplib.IMAP4.error, OSError, socket.timeout, TimeoutError) as exc:
+                        logger.warning(
+                            "退出 IMAP 连接失败: account_id=%s error_type=%s error=%s duration_ms=%.1f",
+                            account.id,
+                            type(exc).__name__,
+                            exc,
+                            (perf_counter() - close_started_at) * 1000,
+                        )
+                        try:
+                            mail.shutdown()
+                        except (OSError, socket.timeout, TimeoutError):
+                            pass
+                else:
+                    # 请求失败时直接关闭 socket，避免再次发送 LOGOUT 并额外等待一个网络超时。
+                    try:
+                        mail.shutdown()
+                    except (OSError, socket.timeout, TimeoutError) as exc:
+                        logger.warning(
+                            "强制关闭 IMAP 连接失败: account_id=%s error_type=%s error=%s",
+                            account.id,
+                            type(exc).__name__,
+                            exc,
+                        )
+            finally:
+                logger.info(
+                    "读取邮件阶段耗时: account_id=%s stage=%s duration_ms=%.1f total_duration_ms=%.1f",
+                    account.id,
+                    "logout" if graceful_logout else "shutdown",
+                    (perf_counter() - close_started_at) * 1000,
+                    (perf_counter() - started_at) * 1000,
+                )
 
 
 def load_account_mails(
