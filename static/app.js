@@ -98,6 +98,11 @@ const elements = {
     tagsInput: document.getElementById("tags-input"),
     mailAccountRemark: document.getElementById("mail-account-remark"),
     toggleAutoRefreshBtn: document.getElementById("toggle-auto-refresh-btn"),
+    proxyUrlInput: document.getElementById("proxy-url-input"),
+    proxyStatus: document.getElementById("proxy-status"),
+    proxyMessage: document.getElementById("proxy-message"),
+    saveProxyBtn: document.getElementById("save-proxy-btn"),
+    clearProxyBtn: document.getElementById("clear-proxy-btn"),
     viewPanels: Array.from(document.querySelectorAll(".view-panel")),
     viewTitle: document.getElementById("view-title")
 };
@@ -405,6 +410,59 @@ function updateViewActions() {
     elements.toggleAutoRefreshBtn.hidden = state.currentView !== "mails";
     elements.exportAccountsBtn.hidden = state.currentView !== "accounts";
     elements.refreshAccountsBtn.hidden = state.currentView !== "accounts";
+}
+
+function setProxyFormLoading(isLoading) {
+    elements.proxyUrlInput.disabled = isLoading;
+    elements.saveProxyBtn.disabled = isLoading;
+    elements.clearProxyBtn.disabled = isLoading;
+}
+
+function updateProxyStatus(enabled) {
+    elements.proxyStatus.textContent = enabled ? "HTTP 代理已启用" : "当前为直连";
+}
+
+async function loadProxySettings() {
+    setProxyFormLoading(true);
+    elements.proxyStatus.textContent = "读取设置中";
+    setMessage(elements.proxyMessage, "正在读取数据库中的代理设置...", false);
+
+    try {
+        const data = await api("/api/settings/proxy");
+        elements.proxyUrlInput.value = data.proxy_url || "";
+        updateProxyStatus(Boolean(data.enabled));
+        setMessage(elements.proxyMessage, "代理设置已从数据库加载", false);
+    } catch (error) {
+        elements.proxyStatus.textContent = "读取失败";
+        setMessage(elements.proxyMessage, error.message || text.requestFailed, true);
+    } finally {
+        setProxyFormLoading(false);
+    }
+}
+
+async function saveProxySettings(proxyUrl = elements.proxyUrlInput.value.trim()) {
+    setProxyFormLoading(true);
+    setMessage(elements.proxyMessage, "正在保存代理设置...", false);
+
+    try {
+        const data = await api("/api/settings/proxy", {
+            method: "PUT",
+            body: JSON.stringify({ proxy_url: proxyUrl })
+        });
+        elements.proxyUrlInput.value = data.proxy_url || "";
+        updateProxyStatus(Boolean(data.enabled));
+        setMessage(
+            elements.proxyMessage,
+            data.enabled
+                ? "代理设置已保存，新的邮件请求将立即使用该代理"
+                : "代理已清空，新的邮件请求将直连",
+            false
+        );
+    } catch (error) {
+        setMessage(elements.proxyMessage, error.message || text.requestFailed, true);
+    } finally {
+        setProxyFormLoading(false);
+    }
 }
 
 function getDownloadFileNameFromDisposition(disposition) {
@@ -811,7 +869,8 @@ function switchView(view) {
     elements.viewTitle.textContent = ({
         accounts: text.accountsTitle,
         mails: text.mailsTitle,
-        logs: text.logsTitle
+        logs: text.logsTitle,
+        settings: "系统设置"
     })[view] || text.accountsTitle;
     updateViewActions();
     updateMailMobileView();
@@ -1433,6 +1492,8 @@ elements.importBtn.addEventListener("click", importAccounts);
 elements.exportAccountsBtn.addEventListener("click", exportAccounts);
 elements.refreshAccountsBtn.addEventListener("click", () => loadAccounts());
 elements.refreshLogRunBtn.addEventListener("click", triggerTokenRefreshTask);
+elements.saveProxyBtn.addEventListener("click", () => saveProxySettings());
+elements.clearProxyBtn.addEventListener("click", () => saveProxySettings(""));
 elements.saveTagsBtn.addEventListener("click", saveTags);
 elements.saveRemarkBtn.addEventListener("click", saveRemark);
 elements.openMailsBtn.addEventListener("click", openSelectedAccountMails);
@@ -1499,6 +1560,9 @@ elements.menuItems.forEach((item) => {
         }
         if (item.dataset.view === "logs") {
             loadTokenRefreshLogs();
+        }
+        if (item.dataset.view === "settings") {
+            loadProxySettings();
         }
         startAutoRefresh();
     });

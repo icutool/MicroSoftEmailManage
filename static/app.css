@@ -191,6 +191,19 @@ body.modal-open {
     grid-template-columns: minmax(0, 1fr);
 }
 
+.content-grid-settings {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-panel {
+    width: 100%;
+    max-width: 900px;
+}
+
+.settings-form {
+    max-width: 720px;
+}
+
 .panel {
     border-radius: 24px;
     padding: 20px;

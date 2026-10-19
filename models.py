@@ -42,3 +42,10 @@ class MailRefreshTokenHistory(Base):
     mail_account_id = Column(Integer, index=True, nullable=False)
     old_refresh_token = Column(Text, default="", nullable=False)
     update_time = Column(Integer, nullable=False)
+
+
+class AppSetting(Base):
+    __tablename__ = "app_setting"
+
+    setting_key = Column(Text, primary_key=True)
+    setting_value = Column(Text, default="", nullable=False)

@@ -19,6 +19,7 @@
                 <button class="menu-item is-active" type="button" data-view="accounts">账号管理</button>
                 <button class="menu-item" type="button" data-view="mails">邮件查看</button>
                 <button class="menu-item" type="button" data-view="logs">日志</button>
+                <button class="menu-item" type="button" data-view="settings">系统设置</button>
             </nav>
 
             <div class="sidebar-footer">
@@ -219,6 +220,48 @@
 
                         <p id="refresh-log-message" class="message"></p>
                         <div id="refresh-log-list" class="refresh-log-list"></div>
+                    </section>
+                </div>
+            </section>
+
+            <section class="view-panel" data-panel="settings">
+                <div class="content-grid content-grid-settings">
+                    <section class="panel settings-panel">
+                        <div class="panel-head">
+                            <div>
+                                <p class="eyebrow">Network</p>
+                                <h3>邮件 HTTP 代理</h3>
+                                <p class="muted">统一配置 OAuth 令牌刷新和 Outlook 邮件连接使用的代理。</p>
+                            </div>
+                            <span id="proxy-status" class="pill">读取设置中</span>
+                        </div>
+
+                        <div class="stack gap-md settings-form">
+                            <div class="info-card">
+                                <span class="info-label">生效范围</span>
+                                <div class="remark-content">保存后写入本地数据库；新的邮件请求立即使用新设置，正在执行的请求不受影响。</div>
+                            </div>
+
+                            <div class="stack gap-sm">
+                                <label class="field-label" for="proxy-url-input">HTTP 代理地址</label>
+                                <input
+                                    id="proxy-url-input"
+                                    class="input"
+                                    type="text"
+                                    inputmode="url"
+                                    autocomplete="off"
+                                    spellcheck="false"
+                                    placeholder="http://127.0.0.1:7890"
+                                >
+                                <p class="muted">留空并保存即可直连。代理需支持 CONNECT 到 outlook.live.com:993。</p>
+                            </div>
+
+                            <div class="action-row">
+                                <button id="save-proxy-btn" class="button" type="button">保存代理设置</button>
+                                <button id="clear-proxy-btn" class="button button-ghost" type="button">清空并直连</button>
+                            </div>
+                            <p id="proxy-message" class="message"></p>
+                        </div>
                     </section>
                 </div>
             </section>

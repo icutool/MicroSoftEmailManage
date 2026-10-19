@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from database import Base, SessionLocal, engine
 from mail_service import MailServiceError, load_account_mails
 from models import MailAccount, TokenRefreshLog
+from settings_service import get_mail_proxy_url, save_mail_proxy_url
 from token_refresh_service import (
     ALLOWED_PAGE_SIZES,
     TokenRefreshTaskRunningError,
@@ -57,6 +58,10 @@ class TagsBody(BaseModel):
 
 class RemarkBody(BaseModel):
     remark: str
+
+
+class ProxySettingBody(BaseModel):
+    proxy_url: str = ""
 
 
 def get_db():
@@ -207,6 +212,23 @@ def list_accounts(
             for account in accounts
         ]
     }
+
+
+@app.get("/api/settings/proxy", dependencies=[Depends(require_token)])
+def get_proxy_settings(db: Session = Depends(get_db)):
+    proxy_url = get_mail_proxy_url(db)
+    return {"proxy_url": proxy_url, "enabled": bool(proxy_url)}
+
+
+@app.put("/api/settings/proxy", dependencies=[Depends(require_token)])
+def update_proxy_settings(body: ProxySettingBody, db: Session = Depends(get_db)):
+    try:
+        proxy_url = save_mail_proxy_url(db, body.proxy_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    logger.info("邮件 HTTP 代理设置已保存: enabled=%s", bool(proxy_url))
+    return {"proxy_url": proxy_url, "enabled": bool(proxy_url)}
 
 
 @app.post("/api/accounts/import", dependencies=[Depends(require_token)])

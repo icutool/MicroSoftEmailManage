@@ -138,7 +138,8 @@ abc2@hotmail.com----123456----clientidxxxx----refresh_token_xxx
 .
 ├─ icutool_mail.py                # FastAPI 入口与接口定义
 ├─ oauth_service.py               # OAuth token 刷新逻辑
-├─ proxy_config.py                # 邮件 HTTP 代理配置
+├─ proxy_config.py                # 邮件 HTTP 代理地址校验与协议配置
+├─ settings_service.py            # 系统设置的数据库读写
 ├─ mail_service.py                # 邮件读取与 IMAP 交互
 ├─ token_refresh_service.py       # 每日自动刷新任务与日志
 ├─ models.py                      # 数据模型
@@ -184,21 +185,9 @@ admin123
 
 ### 3. 配置邮件 HTTP 代理（可选）
 
-设置 `MAIL_HTTP_PROXY` 后，OAuth HTTPS 请求和 Outlook IMAP SSL 连接都会走该 HTTP 代理；未设置或留空时直连。
+登录后台后进入“系统设置”，填写例如 `http://127.0.0.1:7890` 并保存。设置会持久化到 SQLite 数据库，并立即用于后续 OAuth HTTPS 请求和 Outlook IMAP SSL 连接；清空地址并保存则恢复直连，无需重启项目。
 
-Windows PowerShell：
-
-```powershell
-$env:MAIL_HTTP_PROXY="http://127.0.0.1:7890"
-```
-
-Linux Shell：
-
-```shell
-export MAIL_HTTP_PROXY="http://127.0.0.1:7890"
-```
-
-IMAP SSL 通过 HTTP `CONNECT` 隧道连接 `outlook.live.com:993`，因此代理需要允许 CONNECT 到 993 端口。设置或修改代理地址后需要重启项目。
+IMAP SSL 通过 HTTP `CONNECT` 隧道连接 `outlook.live.com:993`，因此代理需要允许 CONNECT 到 993 端口。
 
 ### 4. 启动项目
 
@@ -215,6 +204,7 @@ http://IP:10019
 ## 数据存储说明
 
 - 默认使用本地 `SQLite` 数据库文件 `mail.db`
+- 邮件代理地址保存在 `app_setting` 表中，通过后台“系统设置”维护
 - `mail.db` 已在 `.gitignore` 中忽略，不会默认提交到 GitHub
 - 项目会自动建表
 - 若旧数据库缺少 `remark` 字段，启动时会自动补齐

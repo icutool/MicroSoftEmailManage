@@ -1,45 +1,47 @@
 import base64
-import os
 from urllib.parse import unquote, urlsplit
 
 
-def _load_http_proxy_url() -> str | None:
-    proxy_url = os.getenv("MAIL_HTTP_PROXY", "").strip()
+def normalize_http_proxy_url(proxy_url: str | None) -> str:
+    proxy_url = (proxy_url or "").strip()
     if not proxy_url:
-        return None
+        return ""
+    if any(char.isspace() or ord(char) < 32 for char in proxy_url):
+        raise ValueError("代理地址格式错误，请输入 http://主机:端口")
 
     try:
         parsed = urlsplit(proxy_url)
         port = parsed.port
     except ValueError as exc:
-        raise ValueError("MAIL_HTTP_PROXY must be a valid http://host:port URL") from exc
+        raise ValueError("代理地址格式错误，请输入 http://主机:端口") from exc
 
     if (
         parsed.scheme.lower() != "http"
         or not parsed.hostname
         or port is None
+        or not 1 <= port <= 65535
         or parsed.path not in ("", "/")
         or parsed.query
         or parsed.fragment
     ):
-        raise ValueError("MAIL_HTTP_PROXY must be a valid http://host:port URL")
+        raise ValueError("代理地址格式错误，请输入 http://主机:端口")
 
     return proxy_url
 
 
-MAIL_HTTP_PROXY_URL = _load_http_proxy_url()
-REQUESTS_PROXY_MAP = (
-    {"http": MAIL_HTTP_PROXY_URL, "https": MAIL_HTTP_PROXY_URL}
-    if MAIL_HTTP_PROXY_URL
-    else {}
-)
+def build_requests_proxy_map(proxy_url: str | None) -> dict[str, str]:
+    proxy_url = normalize_http_proxy_url(proxy_url)
+    if not proxy_url:
+        return {}
+    return {"http": proxy_url, "https": proxy_url}
 
 
-def get_proxy_authorization_header() -> str | None:
-    if not MAIL_HTTP_PROXY_URL:
+def get_proxy_authorization_header(proxy_url: str | None) -> str | None:
+    proxy_url = normalize_http_proxy_url(proxy_url)
+    if not proxy_url:
         return None
 
-    parsed = urlsplit(MAIL_HTTP_PROXY_URL)
+    parsed = urlsplit(proxy_url)
     if parsed.username is None:
         return None
 
