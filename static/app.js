@@ -8,6 +8,41 @@ const MAIL_TAG_FILTER_STORAGE_KEY = "mail_manager_mail_tag_filter";
 const MOBILE_LAYOUT_BREAKPOINT = 980;
 const DEFAULT_LOG_PAGE_SIZE = 10;
 
+// 页签 URL 使用简短、可读的参数值；同时兼容旧名称和单复数写法
+const VIEW_TAB_VALUES = {
+    accounts: "accounts",
+    mails: "mail",
+    logs: "log",
+    settings: "settings"
+};
+const TAB_VIEW_ALIASES = {
+    accounts: "accounts",
+    account: "accounts",
+    mail: "mails",
+    mails: "mails",
+    log: "logs",
+    logs: "logs",
+    settings: "settings",
+    setting: "settings"
+};
+
+function getViewFromUrl() {
+    const tab = (new URLSearchParams(window.location.search).get("tab") || "").trim().toLowerCase();
+    return TAB_VIEW_ALIASES[tab] || "accounts";
+}
+
+function updateViewUrl(view, historyMode = "push") {
+    const tab = VIEW_TAB_VALUES[view] || VIEW_TAB_VALUES.accounts;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("tab") === tab) {
+        return;
+    }
+
+    url.searchParams.set("tab", tab);
+    const method = historyMode === "replace" ? "replaceState" : "pushState";
+    window.history[method]({ tab }, "", url);
+}
+
 // 从 localStorage 恢复邮件页标签筛选，并清理非法或互相冲突的旧数据
 function readStoredMailTagFilter() {
     const fallback = {
@@ -1159,6 +1194,45 @@ function switchView(view) {
     updateMailMobileView();
 }
 
+// 统一处理页签激活：同步 URL、刷新当前页需要的数据，并启动对应的自动刷新
+async function activateView(view, {
+    syncUrl = true,
+    historyMode = "push",
+    refreshAccounts = true
+} = {}) {
+    const normalizedView = TAB_VIEW_ALIASES[view] || "accounts";
+    switchView(normalizedView);
+    if (syncUrl) {
+        updateViewUrl(normalizedView, historyMode);
+    }
+
+    if (
+        refreshAccounts
+        && (normalizedView === "accounts" || normalizedView === "mails")
+    ) {
+        await loadAccounts({ silent: normalizedView === "mails" });
+    }
+
+    if (
+        normalizedView === "mails"
+        && state.selectedAccountId
+        && (
+            state.loadedMailAccountId !== state.selectedAccountId
+            || state.loadedMailFolder !== state.selectedFolder
+        )
+    ) {
+        await loadMails();
+    }
+    if (normalizedView === "logs") {
+        loadTokenRefreshLogs();
+    }
+    if (normalizedView === "settings") {
+        loadProxySettings();
+    }
+    startAutoRefresh();
+    return normalizedView;
+}
+
 function stopAutoRefresh() {
     if (state.accountRefreshTimer) {
         window.clearInterval(state.accountRefreshTimer);
@@ -1627,11 +1701,14 @@ async function openSelectedAccountMails() {
         return;
     }
 
-    switchView("mails");
-    await loadAccounts({ silent: true });
+    await activateView("mails");
     setMailMobileStep("list");
-    await loadMails();
-    startAutoRefresh();
+    if (
+        state.loadedMailAccountId !== state.selectedAccountId
+        || state.loadedMailFolder !== state.selectedFolder
+    ) {
+        await loadMails();
+    }
 }
 
 async function promptAndSaveTags(accountId = state.selectedAccountId) {
@@ -1852,34 +1929,7 @@ elements.mailStepButtons.forEach((button) => {
     });
 });
 elements.menuItems.forEach((item) => {
-    item.addEventListener("click", async () => {
-        const view = item.dataset.view;
-        switchView(view);
-
-        // 在“账号管理”和“邮件查看”之间切换时重新拉取账号，
-        // 避免导入、删除或标签变更后仍使用旧列表。
-        if (view === "accounts" || view === "mails") {
-            await loadAccounts({ silent: view === "mails" });
-        }
-
-        if (
-            view === "mails"
-            && state.selectedAccountId
-            && (
-                state.loadedMailAccountId !== state.selectedAccountId
-                || state.loadedMailFolder !== state.selectedFolder
-            )
-        ) {
-            await loadMails();
-        }
-        if (view === "logs") {
-            loadTokenRefreshLogs();
-        }
-        if (view === "settings") {
-            loadProxySettings();
-        }
-        startAutoRefresh();
-    });
+    item.addEventListener("click", () => activateView(item.dataset.view));
 });
 elements.tabs.forEach((tab) => {
     tab.addEventListener("click", async () => {
@@ -1892,6 +1942,10 @@ elements.tabs.forEach((tab) => {
 window.addEventListener("keydown", handleGlobalKeydown);
 window.addEventListener("resize", updateMailMobileView);
 window.addEventListener("beforeunload", stopAutoRefresh);
+window.addEventListener("popstate", () => {
+    // 浏览器前进/后退时 URL 已经是目标页签，只需切换界面，避免重复写入历史记录
+    activateView(getViewFromUrl(), { syncUrl: false });
+});
 
 updateAutoRefreshUi();
 updateViewActions();
@@ -1899,4 +1953,12 @@ updateMailActions();
 updateMailMobileView();
 setRefreshLogRunLoading(false);
 renderRefreshLogs();
-loadAccounts();
+
+// 初始化时先按 URL 激活页签，再加载一次账号数据填充侧边栏统计
+(async () => {
+    await activateView(getViewFromUrl(), {
+        historyMode: "replace",
+        refreshAccounts: false
+    });
+    await loadAccounts();
+})();
