@@ -4,17 +4,56 @@ const NO_TAG_FILTER_VALUE = "__NO_TAG__";
 const TAG_FILTER_INCLUDE = "include";
 const TAG_FILTER_EXCLUDE = "exclude";
 const TAG_FILTER_MODES = [TAG_FILTER_INCLUDE, TAG_FILTER_EXCLUDE];
+const MAIL_TAG_FILTER_STORAGE_KEY = "mail_manager_mail_tag_filter";
 const MOBILE_LAYOUT_BREAKPOINT = 980;
 const DEFAULT_LOG_PAGE_SIZE = 10;
+
+// 从 localStorage 恢复邮件页标签筛选，并清理非法或互相冲突的旧数据
+function readStoredMailTagFilter() {
+    const fallback = {
+        include: new Set(),
+        exclude: new Set()
+    };
+
+    try {
+        const rawValue = localStorage.getItem(MAIL_TAG_FILTER_STORAGE_KEY);
+        if (!rawValue) {
+            return fallback;
+        }
+
+        const stored = JSON.parse(rawValue);
+        const normalizeStoredTags = (value) => new Set(
+            (Array.isArray(value) ? value : [])
+                .filter((tag) => typeof tag === "string" && tag.trim())
+                .map((tag) => tag.trim())
+        );
+
+        const include = normalizeStoredTags(stored?.include);
+        const exclude = normalizeStoredTags(stored?.exclude);
+        // 同一标签不能同时包含和排除，历史数据冲突时以“包含”为准
+        include.forEach((tag) => exclude.delete(tag));
+        return { include, exclude };
+    } catch (error) {
+        return fallback;
+    }
+}
+
+function persistMailTagFilter() {
+    try {
+        localStorage.setItem(MAIL_TAG_FILTER_STORAGE_KEY, JSON.stringify({
+            include: Array.from(state.mailTagFilter.include),
+            exclude: Array.from(state.mailTagFilter.exclude)
+        }));
+    } catch (error) {
+        // localStorage 不可用时只影响持久化，不影响当前页面筛选
+    }
+}
 
 const state = {
     token: localStorage.getItem("mail_manager_token") || "",
     accounts: [],
     // 邮件页的标签筛选条件：包含集合与排除集合同时参与过滤
-    mailTagFilter: {
-        include: new Set(),
-        exclude: new Set()
-    },
+    mailTagFilter: readStoredMailTagFilter(),
     selectedAccountId: null,
     tagModalAccountId: null,
     tagModalReturnFocus: null,
@@ -422,14 +461,20 @@ function getMailTagFilterEntries(availableTags) {
 
 // 标签被删除或改名后，把已失效的勾选从筛选条件里移除
 function pruneMailTagFilter(availableTags) {
+    let changed = false;
     TAG_FILTER_MODES.forEach((mode) => {
         const selected = state.mailTagFilter[mode];
         Array.from(selected).forEach((tag) => {
             if (tag !== NO_TAG_FILTER_VALUE && !availableTags.includes(tag)) {
                 selected.delete(tag);
+                changed = true;
             }
         });
     });
+
+    if (changed) {
+        persistMailTagFilter();
+    }
 }
 
 function renderTagFilterOptions(availableTags) {
@@ -494,6 +539,7 @@ function toggleMailTagFilter(mode, tag, isChecked) {
         selected.delete(tag);
     }
 
+    persistMailTagFilter();
     syncTagFilterOptionState();
     updateTagFilterTriggerLabels();
     renderAccounts();
@@ -505,6 +551,7 @@ function clearMailTagFilter(mode) {
     }
 
     state.mailTagFilter[mode].clear();
+    persistMailTagFilter();
     syncTagFilterOptionState();
     updateTagFilterTriggerLabels();
     renderAccounts();
@@ -1574,15 +1621,16 @@ function closeTagModal(force = false) {
     state.tagModalReturnFocus = null;
 }
 
-function openSelectedAccountMails() {
+async function openSelectedAccountMails() {
     if (!state.selectedAccountId) {
         setMessage(elements.accountMessage, text.chooseAccountFirst, true);
         return;
     }
 
     switchView("mails");
+    await loadAccounts({ silent: true });
     setMailMobileStep("list");
-    loadMails();
+    await loadMails();
     startAutoRefresh();
 }
 
@@ -1804,22 +1852,30 @@ elements.mailStepButtons.forEach((button) => {
     });
 });
 elements.menuItems.forEach((item) => {
-    item.addEventListener("click", () => {
-        switchView(item.dataset.view);
+    item.addEventListener("click", async () => {
+        const view = item.dataset.view;
+        switchView(view);
+
+        // 在“账号管理”和“邮件查看”之间切换时重新拉取账号，
+        // 避免导入、删除或标签变更后仍使用旧列表。
+        if (view === "accounts" || view === "mails") {
+            await loadAccounts({ silent: view === "mails" });
+        }
+
         if (
-            item.dataset.view === "mails"
+            view === "mails"
             && state.selectedAccountId
             && (
                 state.loadedMailAccountId !== state.selectedAccountId
                 || state.loadedMailFolder !== state.selectedFolder
             )
         ) {
-            loadMails();
+            await loadMails();
         }
-        if (item.dataset.view === "logs") {
+        if (view === "logs") {
             loadTokenRefreshLogs();
         }
-        if (item.dataset.view === "settings") {
+        if (view === "settings") {
             loadProxySettings();
         }
         startAutoRefresh();
